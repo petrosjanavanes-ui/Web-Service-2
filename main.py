@@ -2,7 +2,7 @@ import os
 import logging
 import requests
 from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram.ext import Updater, MessageHandler, Filters, CallbackContext
 from telegram.constants import ParseMode
 
 # Настройка логирования
@@ -17,11 +17,9 @@ TOKEN = "8390506713:AAGKlZcg0IrG99FoNM890tB0W0gNs2tKuvs"
 CHANNEL_ID = "@reelsrazyob"
 
 def download_instagram_reel(reel_url):
-    """
-    Скачивает видео из Instagram используя сторонний API
-    """
+    """Скачивает видео из Instagram используя сторонний API"""
     try:
-        # Используем альтернативный API
+        # Используем API для получения информации о видео
         api_url = "https://api.mediadl.app/api/download"
         
         # Отправляем запрос к API
@@ -37,7 +35,6 @@ def download_instagram_reel(reel_url):
         # Получаем URL видео
         video_url = None
         
-        # Пробуем разные возможные пути к видео в ответе API
         if data.get("video"):
             video_url = data["video"]
         elif data.get("url"):
@@ -61,14 +58,12 @@ def download_instagram_reel(reel_url):
             logger.error(f"Ошибка скачивания видео: {video_response.status_code}")
             return None
             
-    except requests.Timeout:
-        logger.error("Таймаут при запросе к API")
-        return None
     except Exception as e:
         logger.error(f"Ошибка при скачивании видео: {str(e)}")
         return None
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def handle_message(update: Update, context: CallbackContext):
+    """Обработчик входящих сообщений"""
     user = update.effective_user
     instagram_url = update.message.text.strip()
     
@@ -76,24 +71,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Проверяем, что это ссылка на Instagram
     if "instagram.com" not in instagram_url:
-        await update.message.reply_text(
+        update.message.reply_text(
             "❌ Это не похоже на ссылку Instagram. Отправь мне ссылку на рилс из Instagram."
         )
         return
     
     try:
         # Отправляем сообщение о начале обработки
-        processing_msg = await update.message.reply_text("🔄 Начинаю обработку рилса...")
+        processing_msg = update.message.reply_text("🔄 Начинаю обработку рилса...")
         
-        # Скачиваем видео (синхронно, в отдельном потоке)
-        video_file = await context.application.run_io_bound(download_instagram_reel, instagram_url)
+        # Скачиваем видео
+        video_file = download_instagram_reel(instagram_url)
         
-        if video_file and os.path.exists(video_file):
-            await processing_msg.edit_text("📤 Публикую рилс в канале...")
+        if video_file:
+            processing_msg.edit_text("📤 Публикую рилс в канале...")
             
             # Публикуем в канал
             with open(video_file, "rb") as video:
-                await context.bot.send_video(
+                context.bot.send_video(
                     chat_id=CHANNEL_ID,
                     video=video,
                     caption=f"🎬 Новый рилс!\n\nОт: @{user.username}" if user.username else "🎬 Новый рилс!",
@@ -103,35 +98,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Удаляем временный файл
             os.remove(video_file)
             
-            await processing_msg.edit_text("✅ Риелс успешно опубликован в канале!")
+            processing_msg.edit_text("✅ Риелс успешно опубликован в канале!")
             logger.info(f"Риелс успешно опубликован в канал {CHANNEL_ID}")
         else:
-            await processing_msg.edit_text("❌ Не удалось скачать видео. Проверь ссылку и попробуй снова.")
+            processing_msg.edit_text("❌ Не удалось скачать видео. Проверь ссылку и попробуй снова.")
             
     except Exception as e:
         logger.error(f"Ошибка: {str(e)}")
         error_msg = str(e)
         if "Forbidden" in error_msg:
-            await update.message.reply_text("❌ Бот не имеет прав для публикации в канале. Убедитесь, что бот добавлен как администратор канала.")
+            update.message.reply_text("❌ Бот не имеет прав для публикации в канале. Убедитесь, что бот добавлен как администратор канала.")
         else:
-            await update.message.reply_text(f"❌ Произошла ошибка: {error_msg}")
+            update.message.reply_text(f"❌ Произошла ошибка: {error_msg}")
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def error_handler(update: Update, context: CallbackContext):
     """Обработчик ошибок"""
     logger.error(f"Ошибка: {context.error}")
 
 def main():
     """Основная функция для запуска бота"""
-    # Создаем приложение
-    application = Application.builder().token(TOKEN).build()
+    # Создаем апдейтер
+    updater = Updater(TOKEN, use_context=True)
+    
+    # Получаем диспетчер для регистрации обработчиков
+    dp = updater.dispatcher
     
     # Добавляем обработчики
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_error_handler(error_handler)
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+    dp.add_error_handler(error_handler)
     
     # Запускаем бота
     logger.info("Бот запускается...")
-    application.run_polling()
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
     main()
