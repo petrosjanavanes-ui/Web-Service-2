@@ -1,10 +1,9 @@
 import os
 import logging
+import requests
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from telegram.constants import ParseMode
-import httpx
-import asyncio
 
 # Настройка логирования
 logging.basicConfig(
@@ -15,9 +14,60 @@ logger = logging.getLogger(__name__)
 
 # Конфигурация
 TOKEN = "8390506713:AAGKlZcg0IrG99FoNM890tB0W0gNs2tKuvs"
-CHANNEL_ID = "@reelsrazyob"  # Твой канал
+CHANNEL_ID = "@reelsrazyob"
 
-# Обработчик текстовых сообщений
+def download_instagram_reel(reel_url):
+    """
+    Скачивает видео из Instagram используя сторонний API
+    """
+    try:
+        # Используем альтернативный API
+        api_url = "https://api.mediadl.app/api/download"
+        
+        # Отправляем запрос к API
+        response = requests.post(api_url, data={"url": reel_url}, timeout=30)
+        
+        if response.status_code != 200:
+            logger.error(f"API вернул статус {response.status_code}")
+            return None
+            
+        data = response.json()
+        logger.info(f"Ответ API: {data}")
+        
+        # Получаем URL видео
+        video_url = None
+        
+        # Пробуем разные возможные пути к видео в ответе API
+        if data.get("video"):
+            video_url = data["video"]
+        elif data.get("url"):
+            video_url = data["url"]
+        elif data.get("medias") and len(data["medias"]) > 0:
+            video_url = data["medias"][0].get("url")
+        
+        if not video_url:
+            logger.error("Не найден URL видео в ответе API")
+            return None
+        
+        # Скачиваем видео
+        video_response = requests.get(video_url, timeout=60)
+        
+        if video_response.status_code == 200:
+            # Сохраняем видео во временный файл
+            with open("temp_video.mp4", "wb") as f:
+                f.write(video_response.content)
+            return "temp_video.mp4"
+        else:
+            logger.error(f"Ошибка скачивания видео: {video_response.status_code}")
+            return None
+            
+    except requests.Timeout:
+        logger.error("Таймаут при запросе к API")
+        return None
+    except Exception as e:
+        logger.error(f"Ошибка при скачивании видео: {str(e)}")
+        return None
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     instagram_url = update.message.text.strip()
@@ -35,20 +85,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Отправляем сообщение о начале обработки
         processing_msg = await update.message.reply_text("🔄 Начинаю обработку рилса...")
         
-        # Скачиваем видео
-        video_data = await download_instagram_reel(instagram_url)
+        # Скачиваем видео (синхронно, в отдельном потоке)
+        video_file = await context.application.run_io_bound(download_instagram_reel, instagram_url)
         
-        if video_data:
-            # Отправляем видео в канал
+        if video_file and os.path.exists(video_file):
             await processing_msg.edit_text("📤 Публикую рилс в канале...")
             
             # Публикуем в канал
-            await context.bot.send_video(
-                chat_id=CHANNEL_ID,
-                video=video_data,
-                caption=f"🎬 Новый рилс!\n\nОт: @{user.username or 'пользователя'}" if user.username else "🎬 Новый рилс!",
-                parse_mode=ParseMode.HTML
-            )
+            with open(video_file, "rb") as video:
+                await context.bot.send_video(
+                    chat_id=CHANNEL_ID,
+                    video=video,
+                    caption=f"🎬 Новый рилс!\n\nОт: @{user.username}" if user.username else "🎬 Новый рилс!",
+                    parse_mode=ParseMode.HTML
+                )
+            
+            # Удаляем временный файл
+            os.remove(video_file)
             
             await processing_msg.edit_text("✅ Риелс успешно опубликован в канале!")
             logger.info(f"Риелс успешно опубликован в канал {CHANNEL_ID}")
@@ -57,64 +110,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     except Exception as e:
         logger.error(f"Ошибка: {str(e)}")
-        await update.message.reply_text(f"❌ Произошла ошибка: {str(e)}")
-
-async def download_instagram_reel(reel_url):
-    """
-    Скачивает видео из Instagram используя сторонний API
-    """
-    try:
-        # Используем mediadl.app API для получения информации о видео
-        api_url = "https://api.mediadl.app/api/download"
-        
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # Отправляем запрос к API
-            response = await client.post(api_url, data={"url": reel_url})
-            
-            if response.status_code != 200:
-                logger.error(f"API вернул статус {response.status_code}")
-                return None
-                
-            data = response.json()
-            logger.info(f"Ответ API: {data}")
-            
-            # Получаем URL видео (может быть несколько вариантов качества)
-            video_url = None
-            
-            # Пробуем разные возможные пути к видео в ответе API
-            if data.get("video"):
-                video_url = data["video"]
-            elif data.get("url"):
-                video_url = data["url"]
-            elif data.get("medias") and len(data["medias"]) > 0:
-                video_url = data["medias"][0].get("url")
-            
-            if not video_url:
-                logger.error("Не найден URL видео в ответе API")
-                return None
-            
-            # Скачиваем видео
-            video_response = await client.get(video_url, timeout=60.0)
-            
-            if video_response.status_code == 200:
-                # Сохраняем видео в временный файл (в памяти)
-                return video_response.content
-            else:
-                logger.error(f"Ошибка скачивания видео: {video_response.status_code}")
-                return None
-                
-    except httpx.TimeoutException:
-        logger.error("Таймаут при запросе к API")
-        return None
-    except Exception as e:
-        logger.error(f"Ошибка при скачивании видео: {str(e)}")
-        return None
+        error_msg = str(e)
+        if "Forbidden" in error_msg:
+            await update.message.reply_text("❌ Бот не имеет прав для публикации в канале. Убедитесь, что бот добавлен как администратор канала.")
+        else:
+            await update.message.reply_text(f"❌ Произошла ошибка: {error_msg}")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик ошибок"""
     logger.error(f"Ошибка: {context.error}")
 
-async def main():
+def main():
     """Основная функция для запуска бота"""
     # Создаем приложение
     application = Application.builder().token(TOKEN).build()
@@ -125,7 +131,7 @@ async def main():
     
     # Запускаем бота
     logger.info("Бот запускается...")
-    await application.run_polling()
+    application.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
